@@ -34,11 +34,21 @@ class PrepareOctojoinSendUsecase {
         throw OctojoinException(OctojoinIssue.bitcoinOnly);
       }
 
+      // The passed-in utxos may have loaded with dropped labels under db
+      // contention. If they carry too few swapped coins to plan, re-read once
+      // authoritatively before failing rather than report "not enough".
+      var effectiveUtxos = utxos;
+      if (effectiveUtxos.where(Octojoin.isSwappedUtxo).length < numInputs - 1) {
+        effectiveUtxos = await _walletUtxoRepository.getWalletUtxos(
+          walletId: wallet.id,
+        );
+      }
+
       final userFrozen = await _walletUtxoRepository.getAllFrozenOutpoints();
       final payjoinFrozen = await _payjoin.getUtxosFrozenByOngoingPayjoins();
       final unspendable = <Outpoint>{...userFrozen, ...payjoinFrozen};
 
-      final spendable = utxos
+      final spendable = effectiveUtxos
           .where(
             (u) =>
                 !u.isFrozen &&
