@@ -1,0 +1,82 @@
+name: octojoin-apk
+
+on:
+  push:
+    branches: [octojoin-apk-ci]
+  workflow_dispatch:
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc /usr/local/.ghcup
+          sudo rm -rf /usr/share/swift
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+          df -h /
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.44.2
+          channel: stable
+          cache: true
+
+      - name: Get dependencies
+        run: flutter pub get --enforce-lockfile
+
+      - name: Code generation
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: Apply local build workarounds
+        run: |
+          # Single NDK for every module so only one version is downloaded.
+          cat >> android/build.gradle <<'EOF'
+
+          subprojects {
+              afterEvaluate { project ->
+                  if (project.hasProperty('android')) {
+                      project.android.ndkVersion = '28.2.13676358'
+                  }
+              }
+          }
+          EOF
+          sed -i 's/android.ndkVersion=29.0.14206865/android.ndkVersion=28.2.13676358/' android/gradle.properties
+          # camera-core 1.6.0 drops concurrent-futures from the compile
+          # classpath; javac may crash on the missing class otherwise.
+          cat >> android/build.gradle <<'EOF'
+
+          subprojects {
+              afterEvaluate { project ->
+                  if (project.name == 'camera_android_camerax') {
+                      project.dependencies {
+                          implementation 'androidx.concurrent:concurrent-futures:1.2.0'
+                      }
+                  }
+              }
+          }
+          EOF
+          # Vendored zxing-cpp needs C++20 under NDK 28's libc++ 19
+          # (char_traits<unsigned char> was removed).
+          sed -i 's/cxx_std_17/cxx_std_20/' \
+            ~/.pub-cache/hosted/pub.dev/flutter_zxing-*/src/zxing/core/CMakeLists.txt
+
+      - name: Build debug APK (production flavor, arm64)
+        run: flutter build apk --debug --flavor production --target-platform android-arm64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bullbitcoin-octojoin-production-debug-apk
+          path: build/app/outputs/flutter-apk/*.apk
+          retention-days: 14
