@@ -1,6 +1,7 @@
+import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:bb_mobile/core/wallet/domain/entities/wallet.dart';
 import 'package:bb_mobile/core/wallet/domain/entities/wallet_utxo.dart';
 import 'package:bb_mobile/features/labels/label.dart';
 import 'package:bb_mobile/features/send/domain/octojoin.dart';
@@ -16,9 +17,15 @@ WalletUtxo _utxo({required int sats, required bool isSwapped, int vout = 0}) {
   );
 }
 
-Matcher _throwsIssue(OctojoinIssue issue) => throwsA(
-  isA<OctojoinException>().having((e) => e.issue, 'issue', issue),
-);
+List<WalletUtxo> _coins(List<int> swapped, List<int> own) => [
+  for (var i = 0; i < swapped.length; i++)
+    _utxo(sats: swapped[i], isSwapped: true, vout: i),
+  for (var i = 0; i < own.length; i++)
+    _utxo(sats: own[i], isSwapped: false, vout: 100 + i),
+];
+
+Matcher _throwsIssue(OctojoinIssue issue) =>
+    throwsA(isA<OctojoinException>().having((e) => e.issue, 'issue', issue));
 
 int Function(int, int) _feeAtRate(double satPerVbyte) =>
     (numInputs, numOutputs) => Octojoin.estimateFee(
@@ -27,71 +34,54 @@ int Function(int, int) _feeAtRate(double satPerVbyte) =>
       satPerVbyte: satPerVbyte,
     );
 
+OctojoinRandomness _rng(String seed) => OctojoinRandomness(utf8.encode(seed));
+
+OctojoinPlan<WalletUtxo> _plan(
+  List<WalletUtxo> utxos,
+  int paymentSat, {
+  String seed = 'octojoin',
+  double rate = 1,
+  bool equalOutputs = false,
+  bool equalInputs = false,
+  List<String> addresses = const ['bc1qa', 'bc1qb'],
+}) => Octojoin.plan(
+  utxos: utxos,
+  paymentSat: paymentSat,
+  addresses: addresses,
+  numInputs: 3,
+  feeForShape: _feeAtRate(rate),
+  rng: _rng(seed),
+  equalOutputs: equalOutputs,
+  equalInputs: equalInputs,
+);
+
+List<int> _values(OctojoinPlan plan) => [
+  for (final t in plan.targets) t.amountSat,
+];
+
+int _smallestInput(OctojoinPlan<WalletUtxo> plan) =>
+    plan.inputs.map((u) => u.amountSat.toInt()).reduce((a, b) => a < b ? a : b);
+
 void main() {
   group('Octojoin protocol logic', () {
-    test('decomposeAmount chunks into standard denominations', () {
-      final denominations = Octojoin.decomposeAmount(300000);
-      expect(denominations.length, 2);
-      expect(denominations, contains(200000));
-      expect(denominations, contains(100000));
-    });
-
-    test('decomposeAmount keeps a non-dust remainder as its own output', () {
-      expect(Octojoin.decomposeAmount(101000), [100000, 1000]);
-    });
-
     test(
-      'decomposeAmount folds a sub-dust remainder into the last output '
-      'instead of losing it to fees',
+      'isOctojoinLabel matches case-insensitively and within longer notes',
       () {
-        expect(Octojoin.decomposeAmount(100500), [100500]);
-        expect(Octojoin.decomposeAmount(100500).fold(0, (s, v) => s + v),
-            100500);
+        expect(Octojoin.isOctojoinLabel('Octojoin 1'), true);
+        expect(Octojoin.isOctojoinLabel('octojoin 2'), true);
+        expect(Octojoin.isOctojoinLabel('my OCTOJOIN swap'), true);
+        expect(Octojoin.isOctojoinLabel('Normal TX'), false);
+        expect(Octojoin.isOctojoinLabel(''), false);
+        expect(Octojoin.isOctojoinLabel(null), false);
       },
     );
-
-    test(
-      'decomposeAmount conserves value for a sub-dust total '
-      '(the 501-546 sat window)',
-      () {
-        for (final amount in [501, 520, 546]) {
-          expect(Octojoin.decomposeAmount(amount), isEmpty);
-        }
-        expect(Octojoin.decomposeAmount(547), [547]);
-      },
-    );
-
-    test('plan rejects a sub-dust payment instead of donating it to fees', () {
-      final utxos = [
-        _utxo(sats: 100000, isSwapped: true),
-        _utxo(sats: 100000, isSwapped: true, vout: 1),
-        _utxo(sats: 100000, isSwapped: false, vout: 2),
-      ];
-      expect(
-        () => Octojoin.plan(
-          utxos: utxos,
-          paymentSat: 520,
-          addresses: ['a', 'b'],
-          numInputs: 3,
-          feeForShape: _feeAtRate(1),
-        ),
-        _throwsIssue(OctojoinIssue.amountBelowDust),
-      );
-    });
-
-    test('isOctojoinLabel matches case-insensitively and within longer notes',
-        () {
-      expect(Octojoin.isOctojoinLabel('Octojoin 1'), true);
-      expect(Octojoin.isOctojoinLabel('octojoin 2'), true);
-      expect(Octojoin.isOctojoinLabel('my OCTOJOIN swap'), true);
-      expect(Octojoin.isOctojoinLabel('Normal TX'), false);
-      expect(Octojoin.isOctojoinLabel(''), false);
-      expect(Octojoin.isOctojoinLabel(null), false);
-    });
 
     test('isSwappedUtxo counts utxo, transaction and address labels', () {
       expect(Octojoin.isSwappedUtxo(_utxo(sats: 1000, isSwapped: true)), true);
-      expect(Octojoin.isSwappedUtxo(_utxo(sats: 1000, isSwapped: false)), false);
+      expect(
+        Octojoin.isSwappedUtxo(_utxo(sats: 1000, isSwapped: false)),
+        false,
+      );
 
       final txLabeled = WalletUtxo.bitcoin(
         walletId: 'w',
@@ -120,275 +110,272 @@ void main() {
       expect(Octojoin.isSwappedUtxo(addressLabeled), true);
     });
 
-    test('selectUtxos isolates octojoin-tagged coins from the rest', () {
-      final utxos = [
-        _utxo(sats: 150000, isSwapped: true),
-        _utxo(sats: 150000, isSwapped: true, vout: 1),
-        _utxo(sats: 50000, isSwapped: false, vout: 2),
-      ];
+    test('randomness repeats for a seed and stays in range', () {
+      List<int> draw(String seed) {
+        final rng = _rng(seed);
+        return [for (var i = 0; i < 200; i++) rng.below(1000)];
+      }
 
-      final selection = Octojoin.selectUtxos(
-        utxos: utxos,
-        numInputs: 3,
-        targetSat: 300000,
-      );
-
-      expect(selection.swapped.length, 2);
-      expect(selection.all.length, 3);
-      expect(selection.totalSat, 350000);
+      expect(draw('seed'), draw('seed'));
+      expect(draw('seed'), isNot(draw('other')));
+      expect(draw('seed').every((d) => d >= 0 && d < 1000), true);
     });
 
-    test(
-      'selectUtxos uses exactly one non-octojoin sender coin and caps inputs '
-      'at numInputs',
-      () {
-        final utxos = [
-          _utxo(sats: 150000, isSwapped: true),
-          _utxo(sats: 150000, isSwapped: true, vout: 1),
-          _utxo(sats: 90000, isSwapped: false, vout: 2),
-          _utxo(sats: 90000, isSwapped: false, vout: 3),
-          _utxo(sats: 90000, isSwapped: false, vout: 4),
-        ];
-        final selection = Octojoin.selectUtxos(
-          utxos: utxos,
-          numInputs: 3,
-          targetSat: 320000,
-        );
-        expect(selection.all.length, 3);
-        expect(Octojoin.isSwappedUtxo(selection.sender), false);
-        expect(selection.swapped.every(Octojoin.isSwappedUtxo), true);
-      },
-    );
-
-    test(
-      'selectUtxos picks the smallest single sender coin that covers the '
-      'target',
-      () {
-        final utxos = [
-          _utxo(sats: 100000, isSwapped: true),
-          _utxo(sats: 100000, isSwapped: true, vout: 1),
-          _utxo(sats: 50000, isSwapped: false, vout: 2),
-          _utxo(sats: 130000, isSwapped: false, vout: 3),
-          _utxo(sats: 900000, isSwapped: false, vout: 4),
-        ];
-        final selection = Octojoin.selectUtxos(
-          utxos: utxos,
-          numInputs: 3,
-          targetSat: 320000,
-        );
-        expect(selection.sender.amountSat.toInt(), 130000);
-        expect(selection.totalSat, 330000);
-      },
-    );
-
-    test(
-      'selectUtxos throws when no single sender coin can cover the target '
-      '(no hoarding)',
-      () {
-        final utxos = [
-          _utxo(sats: 100000, isSwapped: true),
-          _utxo(sats: 100000, isSwapped: true, vout: 1),
-          _utxo(sats: 60000, isSwapped: false, vout: 2),
-          _utxo(sats: 60000, isSwapped: false, vout: 3),
-        ];
-        expect(
-          () => Octojoin.selectUtxos(
-            utxos: utxos,
-            numInputs: 3,
-            targetSat: 300000,
-          ),
-          _throwsIssue(OctojoinIssue.insufficientFunds),
-        );
-      },
-    );
-
-    test(
-      'selectUtxos avoids the unnecessary input heuristic '
-      '(change < smallest input)',
-      () {
-        final utxos = [
-          _utxo(sats: 110000, isSwapped: true),
-          _utxo(sats: 120000, isSwapped: true, vout: 1),
-          _utxo(sats: 500000, isSwapped: true, vout: 2),
-          _utxo(sats: 130000, isSwapped: false, vout: 3),
-          _utxo(sats: 600000, isSwapped: false, vout: 4),
-        ];
-        final selection = Octojoin.selectUtxos(
-          utxos: utxos,
-          numInputs: 3,
-          targetSat: 300000,
-        );
-        expect(selection.all.length, 3);
-        final change = selection.totalSat - 300000;
-        final minInput = selection.all
-            .map((u) => u.amountSat.toInt())
-            .reduce((a, b) => a < b ? a : b);
-        expect(change, greaterThanOrEqualTo(0));
-        expect(change, lessThan(minInput));
-      },
-    );
-
-    test(
-      'selectUtxos prefers a UIH-clean selection over a smaller-change one '
-      'with an unnecessary input',
-      () {
-        final utxos = [
-          _utxo(sats: 5000, isSwapped: true),
-          _utxo(sats: 110000, isSwapped: true, vout: 1),
-          _utxo(sats: 110000, isSwapped: true, vout: 2),
-          _utxo(sats: 152000, isSwapped: true, vout: 3),
-          _utxo(sats: 110000, isSwapped: false, vout: 4),
-          _utxo(sats: 153000, isSwapped: false, vout: 5),
-        ];
-        final selection = Octojoin.selectUtxos(
-          utxos: utxos,
-          numInputs: 3,
-          targetSat: 300000,
-        );
-        final change = selection.totalSat - 300000;
-        final minInput = selection.all
-            .map((u) => u.amountSat.toInt())
-            .reduce((a, b) => a < b ? a : b);
-        expect(change, lessThan(minInput));
-        expect(selection.totalSat, 330000);
-      },
-    );
-
-    test('selectUtxos throws when not enough octojoin coins', () {
-      final utxos = [
-        _utxo(sats: 150000, isSwapped: true),
-        _utxo(sats: 50000, isSwapped: false, vout: 1),
-      ];
-      expect(
-        () =>
-            Octojoin.selectUtxos(utxos: utxos, numInputs: 3, targetSat: 100000),
-        _throwsIssue(OctojoinIssue.notEnoughSwappedCoins),
-      );
+    test('the split range is half to one and a half shares above dust', () {
+      expect(Octojoin.splitRange(300000, 2), (75000, 225000));
+      expect(Octojoin.splitRange(300000, 3), (50000, 150000));
+      expect(Octojoin.splitRange(1200, 2), (547, 900));
+      expect(Octojoin.smallestSplittable(2), 547 + 548);
+      expect(Octojoin.smallestSplittable(2, equalOutputs: true), 2 * 547);
     });
 
-    test('selectUtxos throws when no normal coin is available', () {
-      final utxos = [
-        _utxo(sats: 150000, isSwapped: true),
-        _utxo(sats: 150000, isSwapped: true, vout: 1),
-      ];
-      expect(
-        () =>
-            Octojoin.selectUtxos(utxos: utxos, numInputs: 3, targetSat: 100000),
-        _throwsIssue(OctojoinIssue.noSenderCoin),
-      );
+    test('a split adds up and has different values that are not round', () {
+      for (final k in [2, 3, 4, 5]) {
+        for (final paymentSat in [5000, 80000, 300000, 123456789]) {
+          final rng = _rng('$paymentSat/$k');
+          final (lo, hi) = Octojoin.splitRange(paymentSat, k);
+          for (var i = 0; i < 20; i++) {
+            final parts = Octojoin.splitAmount(paymentSat, k, 546, rng)!;
+            expect(parts.length, k);
+            expect(parts.fold(0, (s, v) => s + v), paymentSat);
+            expect(parts.every((v) => v >= lo && v <= hi), true);
+            expect(parts.toSet().length, k);
+            expect(parts.any(Octojoin.isRound), false);
+          }
+        }
+      }
     });
 
-    test('selectUtxos throws on insufficient total funds', () {
-      final utxos = [
-        _utxo(sats: 10000, isSwapped: true),
-        _utxo(sats: 10000, isSwapped: true, vout: 1),
-        _utxo(sats: 10000, isSwapped: false, vout: 2),
-      ];
+    test('equal amounts split the payment evenly', () {
+      expect(Octojoin.equalSplit(300000, 2), [150000, 150000]);
+      expect(Octojoin.equalSplit(300001, 2), [150001, 150000]);
+      expect(Octojoin.equalSplit(100000, 3), [33334, 33333, 33333]);
+    });
+
+    test('round change gives 1 sat to the fee, and dust change goes to it', () {
+      final fee = _feeAtRate(1)(3, 3);
       expect(
-        () => Octojoin.selectUtxos(
-          utxos: utxos,
+        Octojoin.feeAndChange(
+          totalInputSat: 390000 + fee,
+          paymentSat: 300000,
           numInputs: 3,
-          targetSat: 1000000,
+          numPaymentOutputs: 2,
+          feeForShape: _feeAtRate(1),
         ),
-        _throwsIssue(OctojoinIssue.insufficientFunds),
-      );
-    });
-
-    test('distributeOutputs maps denominations across addresses round-robin',
-        () {
-      final outputs = Octojoin.distributeOutputs(
-        [200000, 100000, 1000],
-        ['addr1', 'addr2'],
-      );
-      expect(outputs['addr1'], 201000);
-      expect(outputs['addr2'], 100000);
-    });
-
-    test('estimateFee scales with size and fee rate', () {
-      expect(
-        Octojoin.estimateFee(numInputs: 3, numOutputs: 2, satPerVbyte: 1),
-        11 + 3 * 68 + 2 * 34,
+        (change: 89999, fee: fee + 1),
       );
       expect(
-        Octojoin.estimateFee(numInputs: 3, numOutputs: 2, satPerVbyte: 2),
-        (11 + 3 * 68 + 2 * 34) * 2,
+        Octojoin.feeAndChange(
+          totalInputSat: 300400,
+          paymentSat: 300000,
+          numInputs: 3,
+          numPaymentOutputs: 2,
+          feeForShape: _feeAtRate(1),
+        ),
+        (change: 0, fee: 400),
       );
-    });
-
-    test('inputVbytesForScriptType matches the script type', () {
-      expect(Octojoin.inputVbytesForScriptType(ScriptType.bip84), 68);
-      expect(Octojoin.inputVbytesForScriptType(ScriptType.bip49), 91);
-      expect(Octojoin.inputVbytesForScriptType(ScriptType.bip44), 148);
     });
   });
 
   group('Octojoin planning', () {
-    final utxos = [
-      _utxo(sats: 100000, isSwapped: true),
-      _utxo(sats: 100000, isSwapped: true, vout: 1),
-      _utxo(sats: 800000, isSwapped: false, vout: 2),
-    ];
+    test('spends numInputs - 1 swapped coins and exactly one sender coin', () {
+      final plan = _plan(
+        _coins([200000, 300000, 400000], [500000, 900000]),
+        600000,
+      );
+      expect(plan.inputs.length, 3);
+      expect(plan.inputs.where(Octojoin.isSwappedUtxo).length, 2);
+      expect(plan.totalInputSat, 600000 + plan.changeSat + plan.feeSat);
+    });
 
-    test(
-      'produces one payment output per address and selects the forced inputs',
-      () {
-        final plan = Octojoin.plan(
-          utxos: utxos,
-          paymentSat: 300000,
-          addresses: ['addrA', 'addrB'],
-          numInputs: 3,
-          feeForShape: _feeAtRate(2),
+    test('prefers a selection without change, then change that blends in', () {
+      for (var seed = 0; seed < 20; seed++) {
+        final changeless = _plan(
+          _coins([120000, 130000], [140000, 50450]),
+          300000,
+          seed: 's$seed',
         );
+        expect(changeless.changeSat, 0);
+        expect(changeless.warnings, isEmpty);
+        final blending = _plan(
+          _coins([120000, 130000], [100000, 140000]),
+          300000,
+          seed: 's$seed',
+        );
+        expect(blending.inputs.last.amountSat.toInt(), 140000);
+        expect(blending.warnings, isEmpty);
+      }
+    });
 
-        expect(plan.targets.length, 2);
-        expect(plan.inputs.length, 3);
-        expect(plan.targets.fold(0, (s, t) => s + t.amountSat), 300000);
-        expect(plan.totalInputSat, 1000000);
-        expect(plan.targets[0].amountSat, 200000);
-        expect(plan.targets[1].amountSat, 100000);
-      },
-    );
+    test('puts a payment output below every input when the change is', () {
+      final ranks = <int>{};
+      for (var seed = 0; seed < 100; seed++) {
+        final plan = _plan(
+          _coins([120000, 130000], [140000]),
+          300000,
+          seed: 's$seed',
+        );
+        final smallestInput = _smallestInput(plan);
+        expect(plan.changeSat, lessThan(smallestInput));
+        expect(
+          _values(plan).reduce((a, b) => a < b ? a : b),
+          lessThan(smallestInput),
+        );
+        ranks.add(
+          ([..._values(plan), plan.changeSat]..sort()).indexOf(plan.changeSat),
+        );
+      }
+      expect(ranks, {
+        0,
+        1,
+      }, reason: 'the change is not always in the same place');
+    });
 
-    test('requires at least two destination addresses', () {
+    test('prefers inputs of near-equal value with equal inputs', () {
+      expect(Octojoin.inputsNearEqual([100000, 110000, 105000]), true);
+      expect(Octojoin.inputsNearEqual([100000, 110001]), false);
+      final utxos = _coins(
+        [60000, 61000, 62000, 63000, 64000, 65000, 66000, 130000, 135000],
+        [140000, 90000],
+      );
+      for (var seed = 0; seed < 20; seed++) {
+        final plan = _plan(utxos, 300000, seed: 's$seed', equalInputs: true);
+        expect(plan.inputs.map((u) => u.amountSat.toInt()).toList()..sort(), [
+          130000,
+          135000,
+          140000,
+        ]);
+        expect(plan.warnings, isEmpty);
+      }
+    });
+
+    test('warns about what an observer could notice', () {
       expect(
-        () => Octojoin.plan(
-          utxos: utxos,
-          paymentSat: 300000,
-          addresses: ['addrA'],
-          numInputs: 3,
-          feeForShape: _feeAtRate(2),
-        ),
+        _plan(_coins([500000, 500000], [500000]), 300000).warnings,
+        contains(OctojoinIssue.unnecessaryInput),
+      );
+      expect(_plan(_coins([100000, 100000], [110000]), 300000).warnings, [
+        OctojoinIssue.changeIdentifiable,
+      ]);
+      final equal = _plan(
+        _coins([120000, 130000], [140000]),
+        300000,
+        equalOutputs: true,
+      );
+      expect(_values(equal), [150000, 150000]);
+      expect(equal.warnings, [OctojoinIssue.changeBesideEqualOutputs]);
+      expect(
+        _plan(
+          _coins([120000, 130000], [140000]),
+          300000,
+          equalInputs: true,
+        ).warnings,
+        [OctojoinIssue.unequalInputs],
+      );
+    });
+
+    test('rejects amounts it cannot split and shapes it cannot build', () {
+      final utxos = _coins([300000, 300000], [300000]);
+      expect(
+        () => _plan(utxos, 520),
+        _throwsIssue(OctojoinIssue.amountBelowDust),
+      );
+      expect(
+        () => _plan(utxos, 1094),
+        _throwsIssue(OctojoinIssue.amountTooSmallToSplit),
+      );
+      expect(_values(_plan(utxos, 1095))..sort(), [547, 548]);
+      expect(
+        () => _plan(_coins([150000], [50000]), 100000),
+        _throwsIssue(OctojoinIssue.notEnoughSwappedCoins),
+      );
+      expect(
+        () => _plan(_coins([150000, 150000], []), 100000),
+        _throwsIssue(OctojoinIssue.noSenderCoin),
+      );
+      expect(
+        () => _plan(_coins([100000, 100000], [50000]), 305000, rate: 10),
+        _throwsIssue(OctojoinIssue.insufficientFunds),
+      );
+      expect(
+        () => _plan(utxos, 300000, addresses: ['bc1qa']),
         _throwsIssue(OctojoinIssue.notEnoughAddresses),
       );
     });
 
-    test('throws when inputs cannot cover payment plus fee', () {
-      final tiny = [
-        _utxo(sats: 100000, isSwapped: true),
-        _utxo(sats: 100000, isSwapped: true, vout: 1),
-        _utxo(sats: 50000, isSwapped: false, vout: 2),
-      ];
-      expect(
-        () => Octojoin.plan(
-          utxos: tiny,
-          paymentSat: 305000,
-          addresses: ['a', 'b'],
-          numInputs: 3,
-          feeForShape: _feeAtRate(10),
-        ),
-        _throwsIssue(OctojoinIssue.insufficientFunds),
-      );
-    });
-
-    test('an absolute fee is used as-is when sizing the selection', () {
-      final plan = Octojoin.plan(
-        utxos: utxos,
-        paymentSat: 300000,
-        addresses: ['addrA', 'addrB'],
-        numInputs: 3,
-        feeForShape: (_, _) => 5000,
-      );
-      expect(plan.totalInputSat, greaterThanOrEqualTo(305000));
+    // The same vectors run against the planners of the reference
+    // implementation and the Electrum plugin, so all of them make the same
+    // choices from the same random stream.
+    test('matches the shared test vectors', () {
+      final vectors =
+          jsonDecode(
+                File(
+                  'test/features/send/domain/octojoin_vectors.json',
+                ).readAsStringSync(),
+              )
+              as List;
+      const errors = {
+        'amountBelowDust': OctojoinIssue.amountBelowDust,
+        'outputBelowDust': OctojoinIssue.amountTooSmallToSplit,
+        'notEnoughSwappedCoins': OctojoinIssue.notEnoughSwappedCoins,
+        'noSenderCoin': OctojoinIssue.noSenderCoin,
+        'insufficientFunds': OctojoinIssue.insufficientFunds,
+      };
+      for (final v in vectors.cast<Map<String, dynamic>>()) {
+        final coins = [
+          for (final (i, c) in (v['coins'] as List).indexed)
+            (
+              index: i,
+              value: c['valueSats'] as int,
+              swapped: c['isSwapped'] as bool,
+            ),
+        ];
+        final seed = v['seed'] as String;
+        final rate = (v['feeRate'] as num).toDouble();
+        final expected = v['expected'] as Map<String, dynamic>;
+        OctojoinPlan<({int index, int value, bool swapped})> run() =>
+            Octojoin.planCoins(
+              coins: coins,
+              valueOf: (c) => c.value,
+              isSwapped: (c) => c.swapped,
+              paymentSat: v['paymentSats'] as int,
+              addresses: [
+                for (var i = 0; i < (v['outputs'] as List).length; i++)
+                  'recipient$i',
+              ],
+              numInputs: v['numInputs'] as int,
+              feeForShape: (n, m) => ((11 + n * 68 + m * 31) * rate).ceil(),
+              rng: OctojoinRandomness([
+                for (var i = 0; i < seed.length; i += 2)
+                  int.parse(seed.substring(i, i + 2), radix: 16),
+              ]),
+              dust: 294,
+              equalOutputs: v['equalOutputs'] as bool,
+              equalInputs: v['equalInputs'] as bool,
+            );
+        if (expected.containsKey('error')) {
+          expect(
+            run,
+            _throwsIssue(errors[expected['error']]!),
+            reason: v['name'] as String,
+          );
+          continue;
+        }
+        final plan = run();
+        expect(
+          {
+            'inputs': [for (final c in plan.inputs) c.index],
+            'payments': _values(plan),
+            'changeSats': plan.changeSat,
+            'feeSats': plan.feeSat,
+            'uihClean': plan.uihClean,
+            'changeHidden': plan.changeHidden,
+            'warnings': [for (final w in plan.warnings) w.name],
+          },
+          expected,
+          reason: v['name'] as String,
+        );
+      }
     });
   });
 }
