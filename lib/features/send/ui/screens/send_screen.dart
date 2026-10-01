@@ -2194,6 +2194,8 @@ String _octojoinErrorMessage(BuildContext context, OctojoinException error) {
   return switch (error.issue) {
     OctojoinIssue.amountBelowDust =>
       context.loc.sendErrorOctojoinAmountTooSmall,
+    OctojoinIssue.amountTooSmallToSplit =>
+      context.loc.sendErrorOctojoinAmountTooSmallToSplit,
     OctojoinIssue.notEnoughAddresses =>
       context.loc.sendErrorOctojoinNotEnoughAddresses,
     OctojoinIssue.numInputsTooLow => context.loc.sendOctojoinNumInputs,
@@ -2207,6 +2209,13 @@ String _octojoinErrorMessage(BuildContext context, OctojoinException error) {
       context.loc.sendErrorOctojoinInsufficientFunds,
     OctojoinIssue.sendMaxUnsupported => context.loc.sendErrorOctojoinSendMax,
     OctojoinIssue.bitcoinOnly => context.loc.sendErrorOctojoinBitcoinOnly,
+    OctojoinIssue.unequalInputs => context.loc.sendErrorOctojoinUnequalInputs,
+    OctojoinIssue.unnecessaryInput =>
+      context.loc.sendErrorOctojoinUnnecessaryInput,
+    OctojoinIssue.changeIdentifiable =>
+      context.loc.sendErrorOctojoinChangeIdentifiable,
+    OctojoinIssue.changeBesideEqualOutputs =>
+      context.loc.sendErrorOctojoinChangeBesideEqualOutputs,
   };
 }
 

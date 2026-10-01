@@ -64,17 +64,22 @@ class PrepareOctojoinSendUsecase {
         addresses: addresses,
         numInputs: numInputs,
         feeForShape: feeForShape,
+        rng: OctojoinRandomness.secure(),
       );
+      if (plan.warnings.isNotEmpty) {
+        throw OctojoinException(plan.warnings.first);
+      }
 
       log.info(
         'Octojoin wallet id ${wallet.id} building psbt: '
         '${plan.inputs.length} inputs, ${plan.targets.length} payment outputs',
       );
 
+      // the planned fee also decides the change, so BDK builds the planned tx
       final psbt = await _bitcoinWalletRepository.buildMultiRecipientPsbt(
         walletId: wallet.id,
         recipients: plan.targets,
-        networkFee: networkFee,
+        networkFee: NetworkFee.absolute(plan.feeSat),
         inputs: plan.inputs,
         replaceByFee: replaceByFee,
       );

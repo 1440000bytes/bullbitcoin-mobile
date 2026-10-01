@@ -1435,6 +1435,26 @@
   "@sendErrorOctojoinAmountTooSmall": {
     "description": "Error when the payment amount is below the dust threshold and cannot be decomposed"
   },
+  "sendErrorOctojoinAmountTooSmallToSplit": "Amount is too small to split into different outputs above the dust threshold. Lower the number of outputs or raise the amount.",
+  "@sendErrorOctojoinAmountTooSmallToSplit": {
+    "description": "Error when the octojoin amount cannot be split into the requested number of outputs above dust"
+  },
+  "sendErrorOctojoinUnequalInputs": "No choice of coins has inputs within 10% of each other in value.",
+  "@sendErrorOctojoinUnequalInputs": {
+    "description": "Error when equal amounts in inputs is requested but no octojoin input selection has near-equal values"
+  },
+  "sendErrorOctojoinUnnecessaryInput": "No choice of coins avoids an unnecessary input, which would tell an observer that this is not a simple payment. Try another amount or other coins.",
+  "@sendErrorOctojoinUnnecessaryInput": {
+    "description": "Error when every octojoin input selection leaves change larger than one of the inputs"
+  },
+  "sendErrorOctojoinChangeIdentifiable": "No choice of coins gives change that blends in with the payment outputs, so an observer could tell the change apart. Try another amount or other coins.",
+  "@sendErrorOctojoinChangeIdentifiable": {
+    "description": "Error when no octojoin input selection gives change of about the size of the payment outputs"
+  },
+  "sendErrorOctojoinChangeBesideEqualOutputs": "No choice of coins avoids change. Next to payment outputs of equal value, the change is the one output with a different value.",
+  "@sendErrorOctojoinChangeBesideEqualOutputs": {
+    "description": "Error when equal amounts in outputs is requested but every octojoin input selection leaves change"
+  },
   "sendErrorOctojoinSendMax": "Octojoin does not support sending the maximum amount",
   "@sendErrorOctojoinSendMax": {
     "description": "Error when send max is combined with octojoin"
